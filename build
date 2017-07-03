@@ -1,0 +1,72 @@
+#!/bin/sh
+#
+# Builds a Debian package for MXNET by fetching the library from the upstream
+# repo.
+#
+# Copyright sociomantic labs GmbH 2017.
+# Distributed under the Boost Software License, Version 1.0.
+# (See accompanying file LICENSE.txt or copy at
+# http://www.boost.org/LICENSE_1_0.txt)
+set -xeu
+
+# Arguments:
+# ref - Git reference to build, normally it should be a tag
+# pkg_build - Debian package build
+test -n "$1"
+test -n "$2"
+ref="$1"
+pkg_build="$2"
+
+# Clone the repo and check out the ref we want
+git clone -b "${ref}" --depth 50 https://github.com/dmlc/mxnet.git
+cd mxnet
+git submodule update --init --recursive
+
+# if the requested build identifier matches a git tag, use that directly,
+# otherwise use git revision description (note, we implicitly assume that all
+# tags and revision descriptions will begin with `v`)
+versiontag=$([ "${ref}" = "$(git tag -l ${ref} --contains HEAD)" ] \
+	&& echo "${ref}" \
+	|| echo "$(git describe)")
+
+# Set up package
+pkgname=libmxnet
+pkgversion_number=$(echo "${versiontag}" | sed 's/^v\(.*\)$/\1/' ) # remove any initial `v`
+pkgbuild="${pkg_build}"
+pkgdistro=$(lsb_release -cs)
+pkgversion="${pkgversion_number}-${pkgbuild}~${pkgdistro}"
+pkgmaintainer="Sociomantic Tsunami <tsunami@sociomantic.com>"
+
+DEB_HOST_MULTIARCH=x86_64-linux-gnu
+
+genchangelog()
+{
+    echo "$1 ($2) $(lsb_release -sc); urgency=low"
+    echo
+    prevtag=$(git describe --abbrev=0 HEAD^)
+    git log --date=short --format=" * %s (%h, $cd)" "$prevtag"..HEAD |
+            fold --spaces --width 76 | sed 's/^\([^ ]\+\)/    \1/'
+    echo
+    echo " -- $3  `LANG=C date -R`"
+}
+
+make USE_BLAS=openblas USE_OPENCV=0 USE_OPENMP=0
+
+changelog=`mktemp`
+genchangelog "$pkgname" "$pkgversion" "$pkgmaintainer" > "$changelog"
+
+cd -
+fpm -s dir -t deb -n "$pkgname" -v "$pkgversion" \
+    --maintainer "$pkgmaintainer" \
+    --description "Lightweight, portable deep learning library" \
+    --url 'https://github.com/dmlc/mxnet' \
+    --vendor 'Distributed (Deep) Machine Learning Community' \
+    --license 'Apache License, Version 2.0' \
+    --category libs \
+    --depends libc6 \
+    --depends libstdc++6 \
+    --depends libopenblas-base \
+    --deb-changelog "$changelog" \
+    --deb-no-default-config-files \
+    mxnet/lib/libmxnet.a=/usr/lib/ \
+    mxnet/lib/libmxnet.so=/usr/lib/
